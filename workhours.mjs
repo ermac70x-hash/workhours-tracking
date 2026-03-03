@@ -2,6 +2,11 @@
 
 import sql from "mssql";
 
+import express from "express";
+
+const app = express();
+app.use(express.json());
+
 // Database configuration
 const config = {
     user: 'work_login',
@@ -16,15 +21,11 @@ const config = {
     }
 };
 
-// данные приложения:
-let app = {};
-
 // подключимся к СУБД
 async function connect() {
     try {
         //app.pool = await sql.connect(config);
         await sql.connect(config);
-        console.log('Connected to SQL Server.');
         
     } catch (err) {
         console.error('Database error:', err);
@@ -37,7 +38,6 @@ async function connect() {
 async function disconnect() {
     try {
         await sql.close();
-        console.log('Disconnected from SQL Server.');
         
     } catch (err) {
         console.error('Database error:', err);
@@ -81,6 +81,37 @@ async function runQuery(query) {
     }
 }
 
+// аргументы: челик роль
+async function assignRole(args) {
+    let employee = args[0];
+    let role = args[1];
+
+    let query = `
+        insert into роли_сотрудники (сотрудники,роли)
+        output inserted.*
+	    values ((select id from сотрудники where fio like '%${employee}%'),
+        (select id from роли where называние like '%${role}%'))`;
+
+    let result = await runQuery(query);
+
+    console.log(result);
+}
+
+async function deleteRole(args) {
+    let employee = args[0];
+    let role = args[1];
+
+    let query = `
+        delete from роли_сотрудники
+        output deleted.*
+        where сотрудники = (select id from сотрудники where fio like '%${employee}%') 
+        and роли = (select id from роли where называние like '%${role}%')
+        `;
+
+    let result = await runQuery(query);
+
+    console.log(result);
+}
 
 async function addRole(role) {
     let query = `insert into роли (называние)
@@ -131,17 +162,69 @@ async function addTask(args) {
 }
 
 // подключимся к СУБД
-await connect();
+if (process.argv.length > 2) {
+    await connect();
 
-let command = process.argv[2];
-let args = process.argv.slice(3);
+    let command = process.argv[2];
+    let args = process.argv.slice(3);
 
-switch (command) {
-    case "+сотрудник": await addEmployee(args); break;
-    case "+задача": await addTask(args); break;
-    case "?сотрудник": await printEmployee(args); break;
-    case "+роли": await addRole(args); break;
-    case "роли": await printRoles(args); break;
+    switch (command) {
+        case "+сотрудник": await addEmployee(args); break;
+        case "+задача": await addTask(args); break;
+        case "?сотрудник": await printEmployee(args); break;
+        case "+роли": await addRole(args); break;
+        case "роли": await printRoles(args); break;
+        case "+назначение": await assignRole(args); break;
+        case "-назначение": await deleteRole(args); break;
+        
+    }
+
+    await disconnect();
 }
+else {
+    async function connectAndRunQuery(query) {
+        await sql.connect(config);
 
-await disconnect();
+        const request = new sql.Request(app.pool);
+        const result = await request.query(query);
+        const answer = result.recordset;
+
+        await sql.close();
+        
+        return answer;
+    }
+
+    async function processQuery(query) {
+        // хотим что: что-то, что контроллер (обработчик для эндпойнта)
+        let result = {};
+
+        try {
+            result.content = await connectAndRunQuery(query);
+            result.statusCode = 200;
+        }
+        catch (e) {
+            result.statusCode = 500;
+            result.content = {message: `${e.constructor.name}: ${e.message}`};
+        }
+
+        return result;
+    }
+
+    async function printRolesWeb(request, response) {
+        await connect();
+        let query = `select * from роли;`;
+        let roles = await runQuery(query);
+        response.status(200).json(roles);
+        disconnect();
+    }
+
+    async function printRolesWeb2(request, response) {
+        let result = await processQuery(`select * from роли;`);
+        response.status(result.statusCode).json(result.content);
+    }
+
+    app.get("/roles", printRolesWeb);
+    app.get("/roles2", printRolesWeb2);
+    const port = 3000;
+    app.listen(port, () => console.log(`Сервер запущен на порту ${port}`));
+}
