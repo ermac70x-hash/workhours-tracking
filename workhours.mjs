@@ -3,12 +3,16 @@
 import sql from "mssql";
 
 import express from "express";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcrypt";
 
 const app = express();
 app.use(express.json());
 
 // Database configuration
 const config = {
+    bcryptRounds : 1, // все остальное к БД, а это шифрование поролей
+    secretKey : "secret", 
     user: 'work_login',
     password: 'Parol111',
     server: '127.0.0.1', // You can use 'localhost' or an IP address
@@ -218,13 +222,119 @@ else {
         disconnect();
     }
 
+    async function getEmployees(request, response) {
+        let result = await processQuery("select * from сотрудники;");
+        response.status(result.statusCode).json(result.content);
+    }
+
+    async function getEmployeesRoles(request, response) {
+        let query = "\
+            select сотрудники.FIO, роли.называние \
+            from роли_сотрудники \
+                join сотрудники on сотрудники.id = роли_сотрудники.сотрудники \
+                join роли on роли.id = роли_сотрудники.роли;";
+
+        let result = await processQuery(query);
+        response.status(result.statusCode).json(result.content);
+    }
+
+    async function assignRoleWeb(request, response) {
+        const {employee, role} = request.body;
+
+        let query = `
+            insert into роли_сотрудники (сотрудники,роли)
+            output inserted.*
+            values ((select id from сотрудники where fio like '%${employee}%'),
+            (select id from роли where называние like '%${role}%'))`;
+
+        let result = await processQuery(query);
+        response.status(result.statusCode).json(result.content);
+    }
+
+    async function addEmployeeWeb(request, response) {
+        const {FIO, ИИН, posport} = request.body;
+
+        let query =
+            `
+            insert into сотрудники(posport,ИИН,FIO)
+            output inserted.id
+            values('${posport}', '${ИИН}', '${FIO}');            
+            `;
+
+        let result = await processQuery(query);
+        response.status(result.statusCode).json(result.content);
+    }
+
+    async function addRoleWeb(request, response) {
+        const {называние} = request.body;
+
+        let query =
+            `
+            insert into роли(называние)
+            output inserted.id
+            values('${называние}');
+            `;
+
+        let result = await processQuery(query);
+        response.status(result.statusCode).json(result.content);
+    }
+
     async function printRolesWeb2(request, response) {
         let result = await processQuery(`select * from роли;`);
         response.status(result.statusCode).json(result.content);
     }
 
-    app.get("/roles", printRolesWeb);
-    app.get("/roles2", printRolesWeb2);
+    async function loginWeb(request, response) {
+        let { login, password } = request.body;
+        
+        // пароль захэшировали
+        let dbPasswordHash = await processQuery(`select password from логины where username = '${login}'`);
+        dbPasswordHash = dbPasswordHash.content[0].password;
+
+        if (bcrypt.compare(password, dbPasswordHash)) {
+            let token = jwt.sign(login, config.secretKey);
+            response.status(200).json({token});
+        }
+        else {
+            response.status(403).json({message: "пошел нафиг дура"});
+        }
+    }
+
+    function authCheck(req, res, next) {
+        try {
+            let key = req.headers.authorization.split(" ")[1];
+            req.user = jwt.verify(key, config.secretKey);
+            next();
+        }
+        catch (e) {
+            res.status(401).json({message: "дура неправильный токен"})
+        }
+    }
+
+    async function addTaskWeb(request, response) {
+        let user = request.user;
+        let task = request.body.task;
+
+        let query = `INSERT INTO задачи(кто_поставил, когда_поставил, описание)
+            values((select сотрудники from логины where username = '${user}'), getdate(), '${task}')`;
+
+        let result = await processQuery(query);
+        response.status(result.statusCode).json(result.content);
+    }
+
+    app.get("/roles", authCheck, printRolesWeb);
+    app.get("/roles2", authCheck, printRolesWeb2);
+    app.get("/employees", authCheck, getEmployees);
+    app.get("/employees-roles", authCheck, getEmployeesRoles);
+
+    app.post("/assign-role", authCheck, assignRoleWeb);
+    app.post("/add-employee", authCheck, addEmployeeWeb);
+    app.post("/add-role", authCheck, addRoleWeb);
+    app.post("/login", loginWeb);
+
+    app.post("/add-task", authCheck, addTaskWeb);
+
+
     const port = 3000;
     app.listen(port, () => console.log(`Сервер запущен на порту ${port}`));
 }
